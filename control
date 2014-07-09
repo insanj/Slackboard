@@ -1,0 +1,10 @@
+Package: com.insanj.slackboard
+Name: Slackboard
+Pre-Depends: firmware (>= 7.0)
+Depends: mobilesubstrate
+Version: 0.1
+Architecture: iphoneos-arm
+Description: Interactive keyboard dismiss in Slack.
+Maintainer: Julian Weiss <insanjmail@gmail.com>
+Author: Julian (insanj) Weiss
+Section: Tweaks
