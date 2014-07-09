@@ -8,70 +8,91 @@
 
 #import <UIKit/UIKit.h>
 
-static NSString * const SBInputAccessoryViewFrameDidChangeNotification = @"SBInputAccessoryViewFrameDidChangeNotification";
+static BOOL slackboard_keyboardVisible = NO;
+static CGFloat slackboard_scrollViewAnchorOrigin = 0.0;
+static NSString *SBScrollViewDidScrollNotification = @"SBScrollViewDidScrollNotification";
 
-@interface SBInputAccessoryView : UIView
-@end
-
-@implementation SBInputAccessoryView
-
-- (void)willMoveToSuperview:(UIView *)newSuperview {
-    if (self.superview) {
-        [self.superview removeObserver:self forKeyPath:@"frame"];
-    }
-
-    [newSuperview addObserver:self forKeyPath:@"frame" options:0 context:NULL];
-    [super willMoveToSuperview:newSuperview];
-}
-
-- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context{
-    if (object == self.superview && [keyPath isEqualToString:@"frame"]) {
-        [[NSNotificationCenter defaultCenter] postNotificationName:SBInputAccessoryViewFrameDidChangeNotification object:object];
-    }
-}
-
-@end
+/**********************************************************************************************
+******************************* Interactive Keyboard Injection ********************************
+**********************************************************************************************/
 
 %hook UITableView
 
 - (void)layoutSubviews {
 	%orig();
+	self.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+}
 
-	if (!self.inputAccessoryView) {
-		NSLog(@"[Slackboard] Slacking %@.", self);
-		self.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
-		self.inputAccessoryView = [[SBInputAccessoryView alloc] init];
+%end
+
+/**********************************************************************************************
+*********************************** Scroll(ing) View Poster ***********************************
+**********************************************************************************************/
+
+@interface SLChatTableViewController : UIViewController
+@end
+
+%hook SLChatTableViewController
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+	%log;
+	%orig();
+
+	// If the keyboard is visible, but untouched by Slackboard.
+	if (slackboard_keyboardVisible /*slackboard_scrollViewAnchorOrigin < 0.0*/) {
+		slackboard_scrollViewAnchorOrigin = scrollView.contentOffset.y;
+	}
+
+	// If the keyboard is visible, and should (now) be touched.
+	else if (slackboard_keyboardVisible && slackboard_scrollViewAnchorOrigin > 0.0) {
+		[[NSNotificationCenter defaultCenter] postNotificationName:SBScrollViewDidScrollNotification object:nil userInfo:@{@"scrollViewChangedOrigin" : @(scrollView.contentOffset.y)}];
 	}
 }
 
 %end
 
+/**********************************************************************************************
+********************************** Accessory View Injections **********************************
+**********************************************************************************************/
 
-@interface HPGrowingTextView : UIView
+@interface HPGrowingTextView : UITextField
 @end
 
 %hook HPGrowingTextView
 
 - (id)initWithFrame:(CGRect)frame {
 	HPGrowingTextView *textView = %orig();
-    [[NSNotificationCenter defaultCenter] addObserver:textView selector:@selector(slackboard_changeFrame:) name:SBInputAccessoryViewFrameDidChangeNotification object:nil];
+
+    [[NSNotificationCenter defaultCenter] addObserver:textView selector:@selector(slackboard_setScrollViewAnchorOrigin:) name:UIKeyboardDidShowNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:textView selector:@selector(slackboard_unsetScrollViewAnchorOrigin:) name:UIKeyboardDidHideNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:textView selector:@selector(slackboard_setSlackFrame:) name:SBScrollViewDidScrollNotification object:nil];
 
     return textView;
 }
 
-%new - (void)slackboard_changeFrame:(NSNotification *)notification {
-	CGRect keyboardEndFrame = ((UIView *)notification.object).frame;
-	NSLog(@"[Slack] %@", NSStringFromCGRect(keyboardEndFrame));
+/*%new - (void)slackboard_setKeyboardEndOrigin:(NSNotification *)notification {
+	// CGRect keyboardEndFrame = [(NSValue *)notification.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+	slackboard_keyboardEndOrigin = keyboardEndFrame.origin.y;
+}*/
 
-	// NSValue *keyboardEndFrame = notification.userInfo[UIKeyboardFrameEndUserInfoKey];
-	// NSNumber *keyboardAnimationDuration = notification.userInfo[UIKeyboardAnimationDurationUserInfoKey];
+%new - (void)slackboard_setScrollViewAnchorOrigin:(NSNotification *)notification {
+	slackboard_keyboardVisible = YES;
+	slackboard_scrollViewAnchorOrigin = 0.0;
+}
+
+%new - (void)slackboard_unsetScrollViewAnchorOrigin:(NSNotification *)notification {
+	slackboard_keyboardVisible = NO;
+	slackboard_scrollViewAnchorOrigin = 0.0;
+}
+
+%new - (void)slackboard_setSlackFrame:(NSNotification *)notification {
+	// CGRect scrollViewScrollAmount = ((UIView *)notification.object).contentOffset;
+	NSNumber *scrollViewNewOrigin = (NSNumber *)notification.userInfo[@"scrollViewChangedOrigin"];
+	CGFloat amountToSlack = [scrollViewNewOrigin floatValue] - slackboard_scrollViewAnchorOrigin;
 
 	CGRect slackedFieldFrame = self.superview.frame;
-	slackedFieldFrame.origin.y = keyboardEndFrame.origin.y - slackedFieldFrame.size.height;
-
-	// [UIView animateWithDuration:0.0 animations:^(void){
-		self.superview.frame = slackedFieldFrame;
-	// }];
+	slackedFieldFrame.origin.y += amountToSlack;
+	self.superview.frame = slackedFieldFrame;
 }
 
 - (void)dealloc {
